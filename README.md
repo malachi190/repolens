@@ -14,7 +14,8 @@ RepoLens uses TypeScript across the product:
 - Stack-specific analyzers behind a shared graph contract; Tree-sitter PHP
   powers the first Laravel analyzer
 - Next.js for the web application (next phase)
-- PostgreSQL, pgvector, Redis, and object storage (later phases)
+- PostgreSQL with Drizzle for persistence
+- pgvector, Redis, and object storage (later phases)
 
 The API stays separate from workers because cloning and analyzing repositories
 must not block HTTP requests.
@@ -22,8 +23,8 @@ must not block HTTP requests.
 ## Current milestone
 
 The local Laravel analyzer and CLI produce an evidence-backed graph for a
-Laravel repository. The local API can start an analysis in a separate process
-and return its graph when the job completes.
+Laravel repository. The API starts analysis in a separate process and stores
+job metadata and completed graphs in PostgreSQL.
 
 ```bash
 pnpm install
@@ -33,11 +34,17 @@ make analyze-fixture
 
 The last command writes `output/fixture-analysis.json`.
 
-## Local API
+## Local API and database
 
-Build the workspace and start the API:
+Start PostgreSQL with Docker Compose, or use an existing PostgreSQL database.
+On a fresh checkout, copy the example environment file and set `DATABASE_URL`
+there to your database connection string. The API and migration command load
+`apps/api/.env` automatically:
 
 ```bash
+cp apps/api/.env.example apps/api/.env
+docker compose up -d db
+pnpm --filter @repolens/api db:migrate
 pnpm build
 pnpm --filter @repolens/api start
 ```
@@ -58,8 +65,23 @@ curl -s http://127.0.0.1:3001/analyses/JOB_ID
 ```
 
 The status moves from `queued` or `running` to `completed` with a graph, or to
-`failed` with an error. Jobs are currently stored in memory and disappear when
-the API restarts. The API listens on localhost for local development.
+`failed` with an error. PostgreSQL stores job metadata in `analysis_jobs` and
+completed graph JSON in `analysis_results`. Results remain available after an
+API restart. An analysis interrupted by a restart is marked `failed` when
+requested. The API listens on localhost for local development.
+
+The regular test suite uses an in-memory store for its HTTP tests. To test the
+PostgreSQL store against a dedicated database, create and migrate that database
+once, then run:
+
+```bash
+docker compose exec db createdb -U repolens repolens_test
+DATABASE_URL=postgresql://repolens:repolens@127.0.0.1:5433/repolens_test pnpm --filter @repolens/api db:migrate
+TEST_DATABASE_URL=postgresql://repolens:repolens@127.0.0.1:5433/repolens_test pnpm --filter @repolens/api test:db
+```
+
+The test creates and deletes its own job rows. The checked-in migration lives
+in `apps/api/drizzle/`.
 
 ## Repository layout
 

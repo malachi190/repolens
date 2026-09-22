@@ -30,5 +30,5 @@ relationship types where they have the same meaning.
 - Laravel remains the first implementation without defining the product's scope.
 - Future Go and TypeScript analyzers can be added without replacing the API or
   graph consumers.
-- The current local job workflow keeps results in API memory; persistence and a
-  durable queue remain future work.
+- The API stores job metadata and completed graphs in PostgreSQL. A durable
+  distributed queue remains future work.
