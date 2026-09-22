@@ -1,0 +1,8 @@
+{
+  "name": "repolens/laravel-orders-fixture",
+  "require": {
+    "php": "^8.3",
+    "laravel/framework": "^12.0"
+  }
+}
+

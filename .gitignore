@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+.env
+.DS_Store
+tmp/
+output/

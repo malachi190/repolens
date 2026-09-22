@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  esbuild: true
+  tree-sitter: true
+  tree-sitter-php: true
+
+peerDependencyRules:
+  allowedVersions:
+    "tree-sitter-php>tree-sitter": "0.25.1"
