@@ -13,6 +13,7 @@ build:
 	pnpm build
 
 dev-api:
+	pnpm build
 	pnpm --filter @repolens/api dev
 
 analyze-fixture:

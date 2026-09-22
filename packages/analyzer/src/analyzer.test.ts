@@ -23,8 +23,12 @@ describe("Laravel analyzer", () => {
     graph.edges.some((edge) => edge.type === type && edge.source === source && edge.target === target);
 
   it("detects project metadata", () => {
+    expect(graph.schemaVersion).toBe("2.0");
     expect(graph.project.name).toBe("repolens/laravel-orders-fixture");
-    expect(graph.project.laravelConstraint).toBe("^12.0");
+    expect(graph.project.technologies).toEqual([
+      { name: "php", versionConstraint: "^8.3" },
+      { name: "laravel", versionConstraint: "^12.0" },
+    ]);
   });
 
   it("connects the route to its controller method", () => {
@@ -48,7 +52,7 @@ describe("Laravel analyzer", () => {
     expect(
       hasEdge(
         "creates_table",
-        "file:database/migrations/2026_09_20_000000_create_orders_table.php",
+        "migration:database/migrations/2026_09_20_000000_create_orders_table.php",
         "table:orders",
       ),
     ).toBe(true);
@@ -63,9 +67,15 @@ describe("Laravel analyzer", () => {
     ).toBe(true);
   });
 
-  it("attaches evidence to every edge", () => {
-    expect(graph.edges.length).toBeGreaterThan(0);
+  it("attaches evidence to every node and edge", () => {
+    expect(graph.nodes.length).toBeGreaterThan(0);
+    expect(graph.nodes.every((node) => node.evidence.length > 0)).toBe(true);
     expect(graph.edges.every((edge) => edge.evidence.length > 0)).toBe(true);
   });
-});
 
+  it("resolves unimported names in their namespace", () => {
+    expect(graph.nodes.some((node) => node.id === "class:App\\Http\\Controllers\\Controller")).toBe(true);
+    expect(graph.nodes.some((node) => node.id === "class:Controller")).toBe(false);
+    expect(graph.nodes.some((node) => node.id === "class:App\\Models\\Customer")).toBe(true);
+  });
+});

@@ -15,6 +15,7 @@ export interface PhpMethod {
 export interface PhpClass {
   name: string;
   qualifiedName: string;
+  namespace: string;
   startLine: number;
   parent?: string;
   imports: Map<string, string>;
@@ -43,23 +44,28 @@ function descendants(node: SyntaxNode, type: string): SyntaxNode[] {
   return matches;
 }
 
-function importsFrom(source: string): Map<string, string> {
+export function importsFrom(source: string): Map<string, string> {
   const imports = new Map<string, string>();
   for (const match of source.matchAll(/^\s*use\s+([^;{]+);/gm)) {
-    const imported = match[1]?.trim();
-    if (imported) {
-      imports.set(imported.split("\\").at(-1) ?? imported, imported);
+    const statement = match[1];
+    if (!statement) continue;
+    for (const entry of statement.split(",")) {
+      const imported = /^(?<name>[\\\w]+)(?:\s+as\s+(?<alias>\w+))?$/i.exec(entry.trim());
+      const name = imported?.groups?.name?.replace(/^\\/, "");
+      if (name) {
+        imports.set(imported?.groups?.alias ?? name.split("\\").at(-1) ?? name, name);
+      }
     }
   }
   return imports;
 }
 
 export function resolvePhpName(phpClass: PhpClass, name: string): string {
-  const clean = name.replace(/^\\/, "");
-  if (clean.includes("\\")) {
-    return clean;
-  }
-  return phpClass.imports.get(clean) ?? clean;
+  if (name.startsWith("\\")) return name.slice(1);
+  const [first, ...rest] = name.split("\\");
+  const imported = phpClass.imports.get(first ?? "");
+  if (imported) return [imported, ...rest].join("\\");
+  return phpClass.namespace ? `${phpClass.namespace}\\${name}` : name;
 }
 
 export function parsePhpFile(source: SourceFile): ParsedPhpFile {
@@ -105,8 +111,9 @@ export function parsePhpFile(source: SourceFile): ParsedPhpFile {
     classes.push({
       name,
       qualifiedName,
+      namespace,
       startLine: classNode.startPosition.row + 1,
-      ...(rawParent ? { parent: imports.get(rawParent) ?? rawParent } : {}),
+      ...(rawParent ? { parent: rawParent } : {}),
       imports,
       methods,
     });
@@ -114,4 +121,3 @@ export function parsePhpFile(source: SourceFile): ParsedPhpFile {
 
   return { classes, hasSyntaxErrors: tree.rootNode.hasError };
 }
-

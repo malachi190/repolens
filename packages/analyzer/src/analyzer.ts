@@ -13,7 +13,7 @@ import {
   type ProjectMetadata,
 } from "@repolens/contracts";
 
-import { parsePhpFile, resolvePhpName, type PhpClass } from "./php-parser.js";
+import { importsFrom, parsePhpFile, resolvePhpName, type PhpClass } from "./php-parser.js";
 import { lineAt, scanPhpFiles, type SourceFile } from "./source.js";
 
 const routePattern =
@@ -88,7 +88,7 @@ class GraphBuilder {
 
   finish(): AnalysisGraph {
     return analysisGraphSchema.parse({
-      schemaVersion: "1.0",
+      schemaVersion: "2.0",
       project: this.project,
       nodes: [...this.nodes.values()].sort((left, right) => left.id.localeCompare(right.id)),
       edges: [...this.edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
@@ -101,8 +101,8 @@ function node(
   id: string,
   type: NodeType,
   name: string,
-  attributes: Record<string, unknown> = {},
-  sourceEvidence: Evidence[] = [],
+  attributes: Record<string, unknown>,
+  sourceEvidence: Evidence[],
 ): GraphNode {
   return { id, type, name, attributes, evidence: sourceEvidence };
 }
@@ -130,13 +130,17 @@ async function projectMetadata(root: string): Promise<ProjectMetadata> {
     name?: string;
     require?: Record<string, string>;
   };
+  const laravelConstraint = composer.require?.["laravel/framework"];
+  if (!laravelConstraint) {
+    throw new Error(`Not a Laravel project (laravel/framework missing): ${root}`);
+  }
   return {
     name: composer.name ?? path.basename(root),
     root,
-    ...(composer.require?.php ? { phpConstraint: composer.require.php } : {}),
-    ...(composer.require?.["laravel/framework"]
-      ? { laravelConstraint: composer.require["laravel/framework"] }
-      : {}),
+    technologies: [
+      { name: "php", ...(composer.require?.php ? { versionConstraint: composer.require.php } : {}) },
+      { name: "laravel", versionConstraint: laravelConstraint },
+    ],
   };
 }
 
@@ -152,11 +156,14 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
 
   const builder = new GraphBuilder(await projectMetadata(root));
   const projectId = `project:${builder.project.name}`;
-  builder.addNode(node(projectId, "project", builder.project.name));
+  builder.addNode(
+    node(projectId, "project", builder.project.name, {}, [
+      { path: "composer.json", startLine: 1, endLine: 1, kind: "project_manifest", confidence: "certain" },
+    ]),
+  );
 
   const sources = await scanPhpFiles(root);
   const classes = new Map<string, { source: SourceFile; phpClass: PhpClass; type: NodeType }>();
-  const shortNames = new Map<string, string>();
 
   for (const source of sources) {
     const fileId = `file:${source.path}`;
@@ -187,12 +194,15 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
       );
       builder.addEdge(edge("declares", fileId, classId, [classEvidence]));
       classes.set(phpClass.qualifiedName, { source, phpClass, type });
-      shortNames.set(phpClass.name, phpClass.qualifiedName);
 
       if (phpClass.parent) {
         const parent = resolvePhpName(phpClass, phpClass.parent);
         const parentId = `class:${parent}`;
-        builder.addNode(node(parentId, "class", parent.split("\\").at(-1) ?? parent, { qualifiedName: parent }));
+        builder.addNode(
+          node(parentId, "class", parent.split("\\").at(-1) ?? parent, { qualifiedName: parent }, [
+            { ...classEvidence, kind: "parent_class_reference" },
+          ]),
+        );
         builder.addEdge(edge("extends", classId, parentId, [classEvidence]));
       }
 
@@ -214,7 +224,7 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
             builder.addNode(
               node(requestId, "form_request", resolved.split("\\").at(-1) ?? resolved, {
                 qualifiedName: resolved,
-              }),
+              }, [{ ...methodEvidence, kind: "parameter_type_reference" }]),
             );
             builder.addEdge(edge("accepts", methodId, requestId, [methodEvidence]));
           }
@@ -224,13 +234,20 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
   }
 
   for (const source of sources) {
+    const isMigration = source.path.startsWith("database/migrations/");
+    const migrationId = `migration:${source.path}`;
+    if (isMigration) {
+      const migrationEvidence = evidence(source, 0, "migration_file");
+      builder.addNode(node(migrationId, "migration", path.basename(source.path), { path: source.path }, [migrationEvidence]));
+      builder.addEdge(edge("declares", `file:${source.path}`, migrationId, [migrationEvidence]));
+    }
     for (const match of source.text.matchAll(schemaCreatePattern)) {
       const table = match.groups?.table;
       if (!table || match.index === undefined) continue;
       const tableId = `table:${table}`;
       const sourceEvidence = evidence(source, match.index, "schema_create");
       builder.addNode(node(tableId, "table", table, {}, [sourceEvidence]));
-      builder.addEdge(edge("creates_table", `file:${source.path}`, tableId, [sourceEvidence]));
+      builder.addEdge(edge("creates_table", isMigration ? migrationId : `file:${source.path}`, tableId, [sourceEvidence]));
     }
   }
 
@@ -256,13 +273,12 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
       const relation = match.groups?.relation;
       const modelName = match.groups?.model;
       if (!relation || !modelName || match.index === undefined) continue;
-      const initiallyResolved = resolvePhpName(phpClass, modelName);
-      const resolved = shortNames.get(initiallyResolved) ?? shortNames.get(modelName) ?? initiallyResolved;
+      const resolved = resolvePhpName(phpClass, modelName);
       const targetId = `class:${resolved}`;
       const relationType = relation.replace(/(?<!^)(?=[A-Z])/g, "_").toLowerCase() as EdgeType;
       const sourceEvidence = evidence(source, match.index, "eloquent_relationship");
       builder.addNode(
-        node(targetId, "model", resolved.split("\\").at(-1) ?? resolved, { qualifiedName: resolved }),
+        node(targetId, "model", resolved.split("\\").at(-1) ?? resolved, { qualifiedName: resolved }, [sourceEvidence]),
       );
       builder.addEdge(edge(relationType, classId, targetId, [sourceEvidence]));
     }
@@ -272,42 +288,37 @@ export async function analyzeRepository(repository: string): Promise<AnalysisGra
       for (const match of method.body.matchAll(staticModelCallPattern)) {
         const modelName = match.groups?.model;
         if (!modelName || match.index === undefined) continue;
-        const initiallyResolved = resolvePhpName(phpClass, modelName);
-        const resolved = shortNames.get(initiallyResolved) ?? shortNames.get(modelName) ?? initiallyResolved;
+        const resolved = resolvePhpName(phpClass, modelName);
         const targetId = `class:${resolved}`;
         const sourceEvidence = evidence(
           source,
           method.bodyStartIndex + match.index,
           "static_model_call",
         );
-        builder.addNode(node(targetId, "model", modelName, { qualifiedName: resolved }));
+        builder.addNode(node(targetId, "model", resolved.split("\\").at(-1) ?? resolved, { qualifiedName: resolved }, [sourceEvidence]));
         builder.addEdge(edge("uses", methodId, targetId, [sourceEvidence]));
       }
     }
   }
 
   for (const source of sources.filter((item) => item.path.startsWith("routes/"))) {
-    const imports = new Map<string, string>();
-    for (const match of source.text.matchAll(/^\s*use\s+([^;]+);/gm)) {
-      const imported = match[1]?.trim();
-      if (imported) imports.set(imported.split("\\").at(-1) ?? imported, imported);
-    }
+    const imports = importsFrom(source.text);
     for (const match of source.text.matchAll(routePattern)) {
       const verb = match.groups?.verb?.toUpperCase();
       const uri = match.groups?.uri;
       const rawController = match.groups?.controller?.replace(/^\\/, "");
       const methodName = match.groups?.method;
       if (!verb || uri === undefined || !rawController || !methodName || match.index === undefined) continue;
-      const controller = imports.get(rawController) ?? rawController;
+      const [first, ...rest] = rawController.split("\\");
+      const controller = [imports.get(first ?? "") ?? first, ...rest].join("\\");
       const routeId = `route:${verb}:${uri}`;
       const methodId = `method:${controller}::${methodName}`;
       const sourceEvidence = evidence(source, match.index, "route_declaration");
       builder.addNode(node(routeId, "route", `${verb} ${uri}`, { method: verb, uri }, [sourceEvidence]));
-      builder.addNode(node(methodId, "method", methodName, { owner: `class:${controller}` }));
+      builder.addNode(node(methodId, "method", methodName, { owner: `class:${controller}` }, [sourceEvidence]));
       builder.addEdge(edge("handled_by", routeId, methodId, [sourceEvidence]));
     }
   }
 
   return builder.finish();
 }
-

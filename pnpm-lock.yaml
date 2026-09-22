@@ -10,6 +10,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@repolens/analyzer':
+        specifier: workspace:*
+        version: link:../../packages/analyzer
+      '@repolens/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       express:
         specifier: ^5.2.1
         version: 5.2.1

@@ -46,7 +46,7 @@ export const graphNodeSchema = z.object({
   type: nodeTypeSchema,
   name: z.string(),
   attributes: z.record(z.string(), z.unknown()),
-  evidence: z.array(evidenceSchema),
+  evidence: z.array(evidenceSchema).min(1),
 });
 export type GraphNode = z.infer<typeof graphNodeSchema>;
 
@@ -64,13 +64,15 @@ export type GraphEdge = z.infer<typeof graphEdgeSchema>;
 export const projectMetadataSchema = z.object({
   name: z.string(),
   root: z.string(),
-  phpConstraint: z.string().optional(),
-  laravelConstraint: z.string().optional(),
+  technologies: z.array(z.object({
+    name: z.string(),
+    versionConstraint: z.string().optional(),
+  })),
 });
 export type ProjectMetadata = z.infer<typeof projectMetadataSchema>;
 
 export const analysisGraphSchema = z.object({
-  schemaVersion: z.literal("1.0"),
+  schemaVersion: z.literal("2.0"),
   project: projectMetadataSchema,
   nodes: z.array(graphNodeSchema),
   edges: z.array(graphEdgeSchema),
